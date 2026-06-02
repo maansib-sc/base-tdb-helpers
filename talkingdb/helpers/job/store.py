@@ -7,6 +7,7 @@ from talkingdb.models.job.error import JobErrorCode
 from talkingdb.models.job.job import JobModel
 from talkingdb.models.job.stage import JobStage
 from talkingdb.models.job.state import JobState
+from talkingdb.models.job.type import JobType
 
 _TERMINAL = tuple(s.value for s in JobState.terminal())
 _TERMINAL_PLACEHOLDERS = ",".join("?" for _ in _TERMINAL)
@@ -42,13 +43,27 @@ def _loads(value: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------- schema
+_REQUIRED_COLUMNS = {"job_id", "job_type", "state"}
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Create the jobs table and supporting indexes (idempotent)."""
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    if existing_cols and not _REQUIRED_COLUMNS.issubset(existing_cols):
+        conn.executescript(
+            "DROP INDEX IF EXISTS idx_jobs_idem;"
+            "DROP INDEX IF EXISTS idx_jobs_type;"
+            "DROP INDEX IF EXISTS idx_jobs_state;"
+            "DROP TABLE IF EXISTS jobs;"
+        )
+
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS jobs (
             job_id           TEXT PRIMARY KEY,
-            idempotency_key  TEXT,
+            job_type         TEXT NOT NULL,
             state            TEXT NOT NULL,
             stage            TEXT,
             total_units      INTEGER DEFAULT 0,
@@ -60,8 +75,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             status_message   TEXT,
             error_code       TEXT,
             error_message    TEXT,
-            user_id          TEXT,
-            session_id       TEXT,
             filename         TEXT,
             file_size_bytes  INTEGER,
             temp_path        TEXT,
@@ -72,7 +85,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at       TEXT
         );
 
-        CREATE INDEX IF NOT EXISTS idx_jobs_idem  ON jobs(idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_jobs_type  ON jobs(job_type);
         CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
         """
     )
@@ -87,7 +100,7 @@ def _row_to_job(row: sqlite3.Row) -> JobModel:
     """
     return JobModel(
         job_id=row["job_id"],
-        idempotency_key=row["idempotency_key"],
+        job_type=JobType(row["job_type"]),
         state=JobState(row["state"]),
         stage=JobStage(row["stage"]) if row["stage"] else None,
         total_units=row["total_units"] or 0,
@@ -99,8 +112,6 @@ def _row_to_job(row: sqlite3.Row) -> JobModel:
         status_message=row["status_message"],
         error_code=JobErrorCode(row["error_code"]) if row["error_code"] else None,
         error_message=row["error_message"],
-        user_id=row["user_id"],
-        session_id=row["session_id"],
         filename=row["filename"],
         file_size_bytes=row["file_size_bytes"],
         temp_path=row["temp_path"],
@@ -118,22 +129,20 @@ def insert(conn: sqlite3.Connection, job: JobModel) -> None:
     conn.execute(
         """
         INSERT INTO jobs (
-            job_id, idempotency_key, state, stage,
+            job_id, job_type, state, stage,
             total_units, done_units, cancel_requested,
-            user_id, session_id, filename, file_size_bytes, temp_path,
+            filename, file_size_bytes, temp_path,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job.job_id,
-            job.idempotency_key,
+            job.job_type.value,
             job.state.value,
             job.stage.value if job.stage else None,
             job.total_units,
             job.done_units,
             1 if job.cancel_requested else 0,
-            job.user_id,
-            job.session_id,
             job.filename,
             job.file_size_bytes,
             job.temp_path,
@@ -317,25 +326,6 @@ def finalize(
 def get(conn: sqlite3.Connection, job_id: str) -> Optional[JobModel]:
     row = conn.execute(
         "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
-    ).fetchone()
-    return _row_to_job(row) if row else None
-
-
-def find_by_idempotency_key(
-    conn: sqlite3.Connection, key: str
-) -> Optional[JobModel]:
-    """Return the existing job for an idempotency key, if any.
-
-    Any non-purged job (in-flight OR terminal) is returned, so a retry with
-    the same key never creates a duplicate. Once retention purges the row the
-    key becomes reusable and a fresh job is created.
-    """
-    if not key:
-        return None
-    row = conn.execute(
-        "SELECT * FROM jobs WHERE idempotency_key = ? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (key,),
     ).fetchone()
     return _row_to_job(row) if row else None
 
