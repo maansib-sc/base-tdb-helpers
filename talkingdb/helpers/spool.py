@@ -51,6 +51,7 @@ async def spool_upload(
     max_size_bytes: Optional[int] = None,
     max_size_mb: Optional[int] = None,
     chunk_size: Optional[int] = None,
+    suffix: Optional[str] = None,
 ) -> Tuple[str, int]:
     """Stream an uploaded file to local disk with bounded memory usage."""
     target = spool_dir or SPOOL_DIR
@@ -58,10 +59,14 @@ async def spool_upload(
     cap_mb = max_size_mb if max_size_mb is not None else MAX_FILE_SIZE_MB
     chunk = chunk_size or SPOOL_CHUNK_BYTES
 
+    if suffix is None:
+        _, ext = os.path.splitext(file.filename or "")
+        suffix = ext or ".bin"
+
     os.makedirs(target, exist_ok=True)
 
     tmp = tempfile.NamedTemporaryFile(
-        prefix="tdb-upload-", suffix=".docx",
+        prefix="tdb-upload-", suffix=suffix,
         dir=target, delete=False,
     )
     temp_path = tmp.name
