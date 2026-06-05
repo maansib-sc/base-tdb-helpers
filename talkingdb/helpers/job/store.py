@@ -196,10 +196,10 @@ def update_progress(
         sets.append("stage = ?")
         params.append(stage.value)
     if done_units is not None:
-        sets.append("done_units = ?")
+        sets.append("done_units = CASE WHEN state IN ('CANCELLING', 'CANCELLED') THEN 0 ELSE ? END")
         params.append(done_units)
     if total_units is not None:
-        sets.append("total_units = ?")
+        sets.append("total_units = CASE WHEN state IN ('CANCELLING', 'CANCELLED') THEN 0 ELSE ? END")
         params.append(total_units)
     if status_message is not None:
         sets.append("status_message = ?")
@@ -237,6 +237,7 @@ def request_cancel(conn: sqlite3.Connection, job_id: str) -> Optional[JobModel]:
             """
             UPDATE jobs
                SET state = ?, cancel_requested = 1,
+                   stage = NULL, 
                    status_message = ?, completed_at = ?, updated_at = ?
              WHERE job_id = ? AND state = ?
             """,
@@ -254,7 +255,9 @@ def request_cancel(conn: sqlite3.Connection, job_id: str) -> Optional[JobModel]:
             """
             UPDATE jobs
                SET state = ?, cancel_requested = 1,
-                   status_message = ?, updated_at = ?
+                   stage = NULL, 
+                   status_message = ?, updated_at = ?,
+                   done_units = 0, total_units = 0 
              WHERE job_id = ? AND state = ?
             """,
             (
@@ -297,7 +300,9 @@ def finalize(
     cur = conn.execute(
         f"""
         UPDATE jobs
-           SET state = ?, stage = NULL, progress_details = NULL,
+           SET state = ?,
+               stage = CASE WHEN ? IN ('CANCELLED', 'CANCELLING') THEN NULL ELSE stage END,
+               progress_details = NULL,
                result_graph_id = COALESCE(?, result_graph_id),
                result_summary  = ?,
                error_code      = ?,
@@ -307,6 +312,7 @@ def finalize(
          WHERE job_id = ? AND state NOT IN ({_TERMINAL_PLACEHOLDERS})
         """,
         (
+            terminal_state.value,
             terminal_state.value,
             result_graph_id,
             _dumps(result_summary),
