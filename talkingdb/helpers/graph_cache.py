@@ -36,6 +36,10 @@ class GraphModelCache:
 
         return base_model
 
+    def invalidate(self, graph_id: str) -> None:
+        with self._lock:
+            self._cache.pop(graph_id, None)
+
     def _start_cleanup_worker(self):
         thread = threading.Thread(
             target=self._cleanup_loop,
