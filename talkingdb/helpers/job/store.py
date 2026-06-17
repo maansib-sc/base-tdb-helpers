@@ -238,47 +238,48 @@ def request_cancel(conn: sqlite3.Connection, job_id: str) -> Optional[JobModel]:
 
     Returns the job's current state after the call, or None if unknown.
     """
-    job = get(conn, job_id)
-    if job is None:
+    if get(conn, job_id) is None:
         return None
 
-    if job.state == JobState.QUEUED:
-        conn.execute(
-            """
-            UPDATE jobs
-               SET state = ?, cancel_requested = 1,
-                   stage = NULL, 
-                   status_message = ?, completed_at = ?, updated_at = ?
-             WHERE job_id = ? AND state = ?
-            """,
-            (
-                JobState.CANCELLED.value,
-                "Upload cancelled before processing started",
-                _now_iso(),
-                _now_iso(),
-                job_id,
-                JobState.QUEUED.value,
-            ),
-        )
-    elif job.state == JobState.ONGOING:
-        conn.execute(
-            """
-            UPDATE jobs
-               SET state = ?, cancel_requested = 1,
-                   stage = NULL, 
-                   status_message = ?, updated_at = ?,
-                   done_units = 0, total_units = 0 
-             WHERE job_id = ? AND state = ?
-            """,
-            (
-                JobState.CANCELLING.value,
-                "Cancelling upload...",
-                _now_iso(),
-                job_id,
-                JobState.ONGOING.value,
-            ),
-        )
-    # CANCELLING or terminal: nothing to do - idempotent no-op.
+    now = _now_iso()
+
+    # QUEUED -> CANCELLED (work never started).
+    conn.execute(
+        """
+        UPDATE jobs
+           SET state = ?, cancel_requested = 1,
+               stage = NULL,
+               status_message = ?, completed_at = ?, updated_at = ?
+         WHERE job_id = ? AND state = ?
+        """,
+        (
+            JobState.CANCELLED.value,
+            "Upload cancelled before processing started",
+            now,
+            now,
+            job_id,
+            JobState.QUEUED.value,
+        ),
+    )
+    # ONGOING -> CANCELLING + cancel_requested flag (worker finalizes later).
+    conn.execute(
+        """
+        UPDATE jobs
+           SET state = ?, cancel_requested = 1,
+               stage = NULL,
+               status_message = ?, updated_at = ?,
+               done_units = 0, total_units = 0
+         WHERE job_id = ? AND state = ?
+        """,
+        (
+            JobState.CANCELLING.value,
+            "Cancelling upload...",
+            now,
+            job_id,
+            JobState.ONGOING.value,
+        ),
+    )
+    # CANCELLING or terminal: both guards miss - idempotent no-op.
 
     return get(conn, job_id)
 
@@ -347,17 +348,30 @@ def get(conn: sqlite3.Connection, job_id: str) -> Optional[JobModel]:
 
 
 def list_documents(
-    conn: sqlite3.Connection, session_id: Optional[str] = None
+    conn: sqlite3.Connection,
+    session_id: Optional[str] = None,
+    *,
+    limit: int = 100,
+    offset: int = 0,
 ) -> List[JobModel]:
-    """List jobs, oldest first, optionally filtered by session."""
+    """List jobs newest first, optionally filtered by session.
+
+    Always bounded by ``limit``/``offset`` so neither the filtered nor the
+    unfiltered path can return an unbounded result set as the table grows.
+    """
+    # job_id tiebreaker keeps the total order stable across pages when two
+    # rows share an identical created_at (same-microsecond concurrent uploads).
     if session_id is None:
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at ASC"
+            "SELECT * FROM jobs "
+            "ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM jobs WHERE session_id = ? ORDER BY created_at ASC",
-            (session_id,),
+            "SELECT * FROM jobs WHERE session_id = ? "
+            "ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?",
+            (session_id, limit, offset),
         ).fetchall()
     return [_row_to_job(r) for r in rows]
 

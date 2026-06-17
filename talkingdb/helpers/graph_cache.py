@@ -37,6 +37,7 @@ class GraphModelCache:
         return base_model
 
     def invalidate(self, graph_id: str) -> None:
+        """Clear the cached entry for a graph after updates or deletion."""
         with self._lock:
             self._cache.pop(graph_id, None)
 
