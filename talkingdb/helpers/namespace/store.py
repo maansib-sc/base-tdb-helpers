@@ -105,6 +105,13 @@ def list_namespaces(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     return [_row_to_dict(r) for r in rows]
 
 
+def list_public_namespaces(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM namespaces WHERE public_read = 1 ORDER BY namespace ASC"
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 def is_public(conn: sqlite3.Connection, namespace: str) -> bool:
     row = conn.execute(
         "SELECT public_read FROM namespaces WHERE namespace = ?", (namespace,)
