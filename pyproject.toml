@@ -14,6 +14,9 @@ packages = [{ include = "talkingdb" }]
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 
+bcrypt = "^5.0.0"
+python-jose = { extras = ["cryptography"], version = "^3.3.0" }
+
 talkingdb-models = { git = "git+https://github.com/TalkingDB/base-tdb-models.git", rev = "3fd7333bbc7de37174d58e906ebcaf374df8e90a" }
 talkingdb-clients = { git = "git+https://github.com/TalkingDB/base-tdb-clients.git", rev = "2cec542cf24b70a46d174f633dd4b042f20aa4cf" }
 

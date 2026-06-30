@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from talkingdb.helpers.client import config
+import bcrypt
 
 security = HTTPBearer()
 
@@ -22,3 +23,20 @@ def verify_api_key(
             },
         )
     return credentials.credentials
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
+
+def verify_password(
+    plain_password: str,
+    hashed_password: str,
+) -> bool:
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"),
+        hashed_password.encode("utf-8")
+    )
