@@ -100,6 +100,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             file_size_bytes  INTEGER,
             temp_path        TEXT,
             heartbeat_at     TEXT,
+            progress_at      TEXT,
             started_at       TEXT,
             completed_at     TEXT,
             created_at       TEXT,
@@ -114,7 +115,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     if "session_id" not in existing_cols and existing_cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN session_id TEXT")
 
-    for col in ("namespace", "title", "description", "suggested_queries"):
+    for col in ("namespace", "title", "description", "suggested_queries", "progress_at"):
         if col not in existing_cols and existing_cols:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
 
@@ -156,6 +157,7 @@ def _row_to_job(row: sqlite3.Row) -> JobModel:
         file_size_bytes=row["file_size_bytes"],
         temp_path=row["temp_path"],
         heartbeat_at=row["heartbeat_at"],
+        progress_at=row["progress_at"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         created_at=row["created_at"] or "",
@@ -233,11 +235,21 @@ def update_progress(
     """Best-effort progress write.
 
     State-guarded so it can never resurrect a terminal job. Only the provided
-    fields are touched; ``heartbeat`` stamps ``heartbeat_at`` so the orphan
-    sweep can tell a live job from a dead one.
+    fields are touched.
+
+    Two distinct liveness signals are stamped here, on purpose:
+
+    * ``heartbeat_at`` - "the worker is alive". Stamped whenever
+      ``heartbeat=True``, including from the background heartbeat timer that
+      ticks independent of real work. Used by the orphan sweep to tell a
+      live job from a dead one.
+    * ``progress_at`` - "the worker is actually moving". Stamped only when a
+      real work signal is provided (``stage``/``done_units``/``total_units``),
     """
     sets: List[str] = ["updated_at = ?"]
     params: List[Any] = [_now_iso()]
+
+    made_progress = stage is not None or done_units is not None or total_units is not None
 
     if stage is not None:
         sets.append("stage = ?")
@@ -256,6 +268,9 @@ def update_progress(
         params.append(_dumps(progress_details))
     if heartbeat:
         sets.append("heartbeat_at = ?")
+        params.append(_now_iso())
+    if made_progress:
+        sets.append("progress_at = ?")
         params.append(_now_iso())
 
     params.append(job_id)
@@ -493,6 +508,23 @@ def select_orphan_candidates(
            AND COALESCE(heartbeat_at, started_at, created_at) < ?
         """,
         (*_NON_TERMINAL, stale_before_iso),
+    ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+def select_stuck_candidates(
+    conn: sqlite3.Connection, stuck_before_iso: str, heartbeat_fresh_after_iso: str
+) -> List[JobModel]:
+    """Non-terminal jobs whose worker is alive but not actually progressing.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT * FROM jobs
+         WHERE state IN ({_NON_TERMINAL_PLACEHOLDERS})
+           AND COALESCE(progress_at, started_at, created_at) < ?
+           AND COALESCE(heartbeat_at, started_at, created_at) >= ?
+        """,
+        (*_NON_TERMINAL, stuck_before_iso, heartbeat_fresh_after_iso),
     ).fetchall()
     return [_row_to_job(r) for r in rows]
 
